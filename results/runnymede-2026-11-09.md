@@ -2,6 +2,8 @@
 
 The `standard` preset and the `rows` preset on one desktop, measured on its live session between 16:27 and 17:36.
 
+**Corrected since, for aizome-kit.** In the wide, balanced and deep scenes this run's kit adapter laid the items below the window out with no height, and in the decorated scenes each of those still drew a shadow. The kit's decorated numbers here (48 ms at 1,024 nodes, 314 ms and more at 8,192) are mostly that mistake; its other numbers measure the same with it fixed. `runnymede-2026-11-09-kit.md` has the corrected numbers, and the kit before and after Sekka PR 373.
+
 | | |
 |---|---|
 | CPU | AMD Ryzen 7 9800X3D |
