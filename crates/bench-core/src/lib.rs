@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-pub const SCHEMA_VERSION: u32 = 1;
+/// 2 added the `aizome_kit` framework and `PipelineSample::rasterize_ns`.
+/// Version 1 documents still load: the new stage is absent from them, and
+/// reads as unmeasured.
+pub const SCHEMA_VERSION: u32 = 2;
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -13,15 +16,17 @@ pub enum Framework {
     #[default]
     Zgui,
     Gpui,
+    AizomeKit,
 }
 
 impl Framework {
-    pub const ALL: [Self; 2] = [Self::Zgui, Self::Gpui];
+    pub const ALL: [Self; 3] = [Self::Zgui, Self::Gpui, Self::AizomeKit];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Zgui => "zgui",
             Self::Gpui => "gpui",
+            Self::AizomeKit => "aizome-kit",
         }
     }
 }
@@ -100,9 +105,51 @@ pub enum Preset {
     Smoke,
     Standard,
     Full,
+    /// One row of a long list changes: what an update costs when almost
+    /// nothing changed, as the list grows.
+    Rows,
+}
+
+/// One node of a column of live (unvirtualized) rows changes a tick: its
+/// label, its fill or its size. The other presets' sparsest update still
+/// touches one node in a hundred or a thousand; this one holds the change
+/// at a single node while the list grows, so the slope is what the
+/// unchanged rows cost.
+fn rows() -> Vec<Scenario> {
+    let mut out = Vec::new();
+    for nodes in [1_000, 3_000, 10_000] {
+        for (workload, name) in [
+            (Workload::TextUpdate, "label"),
+            (Workload::PaintUpdate, "fill"),
+            (Workload::LayoutUpdate, "size"),
+        ] {
+            out.push(Scenario {
+                id: format!("rows-n{nodes}-one-{name}"),
+                workload,
+                nodes,
+                topology: Topology::Wide,
+                style: StyleComplexity::Minimal,
+                // Half a node rounds up to one, whatever the division's
+                // last bit; a whole one can round up to two.
+                update_fraction: 0.5 / nodes as f64,
+                // Fewer frames than the standard preset's: a framework
+                // whose update follows the list takes long over each at
+                // 10,000 rows, and a median needs no more.
+                warmup_frames: 10,
+                sample_frames: 90,
+                width: 1_200,
+                height: 800,
+                seed: 0x5eed_f00d,
+            });
+        }
+    }
+    out
 }
 
 pub fn scenarios(preset: Preset) -> Vec<Scenario> {
+    if preset == Preset::Rows {
+        return rows();
+    }
     let (warmup, frames, sizes, fractions): (u32, u32, &[usize], &[f64]) = match preset {
         Preset::Smoke => (5, 30, &[64], &[1.0]),
         Preset::Standard => (30, 180, &[64, 1_024, 8_192], &[0.01, 0.25, 1.0]),
@@ -112,6 +159,7 @@ pub fn scenarios(preset: Preset) -> Vec<Scenario> {
             &[16, 64, 256, 1_024, 4_096, 16_384],
             &[0.001, 0.01, 0.1, 1.0],
         ),
+        Preset::Rows => unreachable!("returned above"),
     };
     let mut out = Vec::new();
     let mut add = |workload, nodes, topology, style, update_fraction: f64| {
@@ -280,6 +328,11 @@ pub struct PipelineSample {
     pub layout_ns: Option<u64>,
     pub prepaint_ns: Option<u64>,
     pub paint_ns: Option<u64>,
+    /// Turning the frame's drawing into pixels on the CPU, for a framework
+    /// that rasterizes there rather than on the GPU. The GPU stages below
+    /// stay unmeasured for it.
+    #[serde(default)]
+    pub rasterize_ns: Option<u64>,
     pub gpu_prepare_ns: Option<u64>,
     pub command_encode_ns: Option<u64>,
     pub queue_submit_ns: Option<u64>,
@@ -452,8 +505,18 @@ mod tests {
     }
 
     #[test]
+    fn a_rows_tick_changes_one_node() {
+        for spec in scenarios(Preset::Rows) {
+            spec.validate().unwrap();
+            for tick in 1..50 {
+                assert_eq!(affected_indices(&spec, tick).len(), 1, "{}", spec.id);
+            }
+        }
+    }
+
+    #[test]
     fn scenario_ids_are_unique() {
-        for preset in [Preset::Smoke, Preset::Standard, Preset::Full] {
+        for preset in [Preset::Smoke, Preset::Standard, Preset::Full, Preset::Rows] {
             let cases = scenarios(preset);
             let ids: std::collections::BTreeSet<_> = cases.iter().map(|s| &s.id).collect();
             assert_eq!(ids.len(), cases.len());

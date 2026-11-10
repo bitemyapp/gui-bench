@@ -5,6 +5,7 @@ members = [
     "crates/gui-bench",
     "adapters/zgui",
     "adapters/gpui",
+    "adapters/aizome-kit",
 ]
 default-members = ["crates/bench-core", "crates/gui-bench"]
 exclude = ["vendor/gpui-ce"]

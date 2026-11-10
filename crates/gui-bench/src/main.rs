@@ -1,5 +1,6 @@
 mod report;
 mod resource;
+mod summary;
 
 use anyhow::{Context, Result, bail};
 use bench_core::{
@@ -60,6 +61,11 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Print a run as Markdown tables: every scenario and framework at once.
+    Summary {
+        #[arg(default_value = "results/latest.json")]
+        input: PathBuf,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -67,6 +73,7 @@ enum PresetArg {
     Smoke,
     Standard,
     Full,
+    Rows,
 }
 impl From<PresetArg> for Preset {
     fn from(v: PresetArg) -> Self {
@@ -74,6 +81,7 @@ impl From<PresetArg> for Preset {
             PresetArg::Smoke => Self::Smoke,
             PresetArg::Standard => Self::Standard,
             PresetArg::Full => Self::Full,
+            PresetArg::Rows => Self::Rows,
         }
     }
 }
@@ -81,13 +89,24 @@ impl From<PresetArg> for Preset {
 enum FrameworkArg {
     Zgui,
     Gpui,
+    AizomeKit,
 }
 impl From<FrameworkArg> for Framework {
     fn from(v: FrameworkArg) -> Self {
         match v {
             FrameworkArg::Zgui => Self::Zgui,
             FrameworkArg::Gpui => Self::Gpui,
+            FrameworkArg::AizomeKit => Self::AizomeKit,
         }
+    }
+}
+
+/// The adapter's package, which is also its executable's name.
+fn adapter(framework: Framework) -> &'static str {
+    match framework {
+        Framework::Zgui => "bench-zgui",
+        Framework::Gpui => "bench-gpui",
+        Framework::AizomeKit => "bench-aizome-kit",
     }
 }
 
@@ -132,6 +151,11 @@ fn main() -> Result<()> {
             println!("wrote {}", output.display());
             Ok(())
         }
+        Commands::Summary { input } => {
+            let doc: RunDocument = serde_json::from_slice(&fs::read(&input)?)?;
+            print!("{}", summary::render(&doc));
+            Ok(())
+        }
     }
 }
 
@@ -141,6 +165,8 @@ fn preflight() -> Result<()> {
     for path in [
         root.join("../zgui/crates/zgui/Cargo.toml"),
         root.join("vendor/gpui-ce/crates/gpui/Cargo.toml"),
+        root.join("../sekka/desktop/aizome/crates/aizome-kit/Cargo.toml"),
+        root.join("../sekka/desktop/aizome/sukumo/crates/sidestep-engine/Cargo.toml"),
         root.join("assets/echarts.min.js"),
     ] {
         if path.exists() {
@@ -173,11 +199,19 @@ fn run(
     output: &Path,
     no_build: bool,
 ) -> Result<()> {
+    let frameworks: Vec<Framework> = if requested.is_empty() {
+        Framework::ALL.to_vec()
+    } else {
+        requested.into_iter().map(Into::into).collect()
+    };
     if !no_build {
-        // Build in separate Cargo invocations. The two upstream projects activate
+        // Build in separate Cargo invocations. The upstream projects activate
         // mutually incompatible feature combinations in a unified dependency
-        // graph, while the adapters themselves are separate processes.
-        for package in ["bench-zgui", "bench-gpui"] {
+        // graph, while the adapters themselves are separate processes. Only
+        // the adapters this run uses are built, so one framework can be
+        // measured without the others' sources beside it.
+        for &framework in &frameworks {
+            let package = adapter(framework);
             let status = Command::new("cargo")
                 .current_dir(workspace_root())
                 .args(["build", "--profile", "bench-run", "-p", package])
@@ -187,11 +221,6 @@ fn run(
             }
         }
     }
-    let frameworks: Vec<Framework> = if requested.is_empty() {
-        Framework::ALL.to_vec()
-    } else {
-        requested.into_iter().map(Into::into).collect()
-    };
     let mut cases = bench_core::scenarios(preset);
     if let Some(filter) = only {
         cases.retain(|s| s.id.contains(filter));
@@ -257,10 +286,7 @@ fn run_condition(
 ) -> Result<ConditionResult> {
     let exe = workspace_root()
         .join("target/bench-run")
-        .join(match framework {
-            Framework::Zgui => "bench-zgui",
-            Framework::Gpui => "bench-gpui",
-        });
+        .join(adapter(framework));
     let mut child = Command::new(&exe)
         .arg("--scenario")
         .arg(serde_json::to_string(spec)?)
@@ -495,5 +521,6 @@ fn source_metadata() -> BTreeMap<String, SourceMetadata> {
             "gpui-ce-vendored-from".into(),
             source(&root.join("../gpui-ce")),
         ),
+        ("aizome-kit".into(), source(&root.join("../sekka"))),
     ])
 }

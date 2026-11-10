@@ -101,6 +101,17 @@ fn balanced(
     item(spec, id, ticks[id], nested)
 }
 
+/// An item with no children, which a structural update can take out and
+/// put back.
+fn leaf(spec: &Scenario, id: usize, tick: LocalSignal<u64>, present: LocalSignal<bool>) -> AnyView {
+    if matches!(spec.workload, Workload::StructuralUpdate) {
+        let spec = spec.clone();
+        AnyView::new(move || present.get().then(|| item(&spec, id, tick, Vec::new())))
+    } else {
+        item(spec, id, tick, Vec::new())
+    }
+}
+
 fn document(spec: Scenario, stimulus: Stimulus) -> AnyView {
     let ticks: Vec<LocalSignal<u64>> = (0..spec.nodes).map(|_| RwSignal::new_local(0)).collect();
     let present: Vec<LocalSignal<bool>> =
@@ -109,24 +120,17 @@ fn document(spec: Scenario, stimulus: Stimulus) -> AnyView {
         Topology::Flat => AnyView::new(
             zgui::elements::row().class("root").children(
                 (0..spec.nodes)
-                    .map(|id| {
-                        if matches!(spec.workload, Workload::StructuralUpdate) {
-                            let present = present[id];
-                            let spec = spec.clone();
-                            let tick = ticks[id];
-                            AnyView::new(move || {
-                                present.get().then(|| item(&spec, id, tick, Vec::new()))
-                            })
-                        } else {
-                            item(&spec, id, ticks[id], Vec::new())
-                        }
-                    })
+                    .map(|id| leaf(&spec, id, ticks[id], present[id]))
                     .collect::<Vec<_>>(),
             ),
         ),
         Topology::Wide => {
+            // The presets' structural scenarios are all wide. Their leaves
+            // read `present` as the flat ones do: built plainly, nothing
+            // would read the signals the update sets, and the scenario
+            // would measure an update that changes nothing.
             let children = (1..spec.nodes)
-                .map(|id| item(&spec, id, ticks[id], Vec::new()))
+                .map(|id| leaf(&spec, id, ticks[id], present[id]))
                 .collect();
             item(&spec, 0, ticks[0], children)
         }
@@ -233,6 +237,8 @@ impl FrameProbe for Probe {
                     layout_ns: mark_delta(marks, "f.layout", "f.enter"),
                     prepaint_ns: mark_delta(marks, "f.boxes", "f.layout"),
                     paint_ns: mark_delta(marks, "p.emit", "p.finish"),
+                    // On the GPU: the stages below.
+                    rasterize_ns: None,
                     gpu_prepare_ns: mark_delta(marks, "draw.in", "r.record"),
                     command_encode_ns: mark_delta(marks, "r.record", "acq.in"),
                     queue_submit_ns: mark_delta(marks, "acq.out", "sub.out"),
@@ -383,12 +389,10 @@ fn main() -> Result<()> {
                     "surface exposes no GPU handles".into(),
                 ))
             })?;
+            // The builder makes the surface itself, from the window's
+            // handles, on whichever instance it opens the device from.
             let builder = zgui_render_wgpu::Builder::new();
-            let drawable = builder
-                .instance()
-                .create_surface(handles)
-                .map_err(|e| zgui_platform::PlatformError::Backend(e.to_string()))?;
-            Ok(Box::new(builder.for_surface(target, drawable)?) as Box<dyn zgui_render::Renderer>)
+            Ok(Box::new(builder.for_surface(target, handles)?) as Box<dyn zgui_render::Renderer>)
         },
     );
     let app = zgui::app()

@@ -231,6 +231,8 @@ fn drive(window: &Window, view: Entity<BenchView>, driver: Rc<Driver>) {
                             .as_nanos() as u64
                     }),
                     paint_ns: timing.map(|v| v.pipeline.paint.as_nanos() as u64),
+                    // On the GPU: the stages below.
+                    rasterize_ns: None,
                     gpu_prepare_ns: renderer.map(|v| (v.acquire + v.prepare).as_nanos() as u64),
                     command_encode_ns: renderer.map(|v| v.encode.as_nanos() as u64),
                     queue_submit_ns: renderer.map(|v| v.submit.as_nanos() as u64),
