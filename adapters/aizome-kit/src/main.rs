@@ -124,6 +124,30 @@ impl Widget for FrameTick {
     }
 }
 
+/// The window's content, as tall as it comes: what CSS's `overflow: hidden`
+/// does for a column whose children keep their heights. A kit column gives
+/// a child that doesn't fit the room that is left, which past the window's
+/// bottom is none; without this the items out of sight are laid out with
+/// no height, where the other adapters' keep theirs, and a decorated one
+/// still draws its shadow there. (An app would put a column this long in
+/// the kit's `scroll`, which lays its content out the same way.)
+struct Tall;
+
+impl Widget for Tall {
+    fn name(&self) -> &'static str {
+        "tall"
+    }
+
+    fn layout(&mut self, cx: &mut LayoutCx, bc: Constraints) -> Size {
+        cx.layout_child(
+            0,
+            Constraints::loose(Size::new(bc.max.width, f64::INFINITY)),
+        );
+        cx.place_child(0, Point::ZERO);
+        bc.max
+    }
+}
+
 /// Children in rows, left to right, wrapping at the width given, `gap`
 /// apart: CSS's `flex-wrap`, which the kit's rows don't have.
 struct Wrap {
@@ -238,6 +262,8 @@ struct Bench {
     build_ns: Cell<u64>,
     /// The frame before this one, waiting for the render thread's part of it.
     pending: Option<FrameSample>,
+    /// Frames spent asking for the scenario's window size before the run.
+    settling: u8,
     done: bool,
 }
 
@@ -267,6 +293,7 @@ impl Bench {
             view_ended: Cell::new(None),
             build_ns: Cell::new(0),
             pending: None,
+            settling: 0,
             done: false,
         }
     }
@@ -407,6 +434,24 @@ impl Bench {
     /// A display pass began at `at`: sample it, and send the next mutation.
     fn frame(&mut self, at: Instant, cx: &mut Cx<Msg>) {
         if self.done {
+            // The frame after a resize run put the window back at the
+            // scenario's size: the size the compositor remembers it by.
+            cx.quit();
+            return;
+        }
+        // A compositor that remembers where a program's windows were opens
+        // this one at the size its last run left. Aizome does, by app id,
+        // and takes the binary's name for a program that gives none. Ask for
+        // the scenario's size, and begin once the window has it.
+        let want = Size::new(f64::from(self.spec.width), f64::from(self.spec.height));
+        let sized =
+            |s: Size| (s.width - want.width).abs() < 0.5 && (s.height - want.height).abs() < 0.5;
+        if self.sequence == 0
+            && self.settling < 60
+            && self.shared.size.get().is_some_and(|s| !sized(s))
+        {
+            self.settling += 1;
+            cx.request_size(self.window, want);
             return;
         }
         let diagnostic = self.mode == MeasurementMode::Diagnostic;
@@ -461,7 +506,11 @@ impl Bench {
                 frames: sequence + 1,
             });
             self.done = true;
-            cx.quit();
+            if self.resizing() {
+                cx.request_size(self.window, want);
+            } else {
+                cx.quit();
+            }
             return;
         }
         self.pending = Some(sample);
@@ -492,10 +541,7 @@ impl Bench {
 impl Program for Bench {
     type Msg = Msg;
 
-    /// No app id, as the other adapters' windows have none. A compositor
-    /// that remembers where an app's windows were (Aizome does, by app id)
-    /// would open this one at the size its last run left, which after a
-    /// resize run is not the scenario's, and would hold it there.
+    /// No app id, as the other adapters' windows have none.
     fn info(&self) -> AppInfo {
         AppInfo::new("", "aizome-kit benchmark", "Benchmark")
     }
@@ -515,7 +561,7 @@ impl Program for Bench {
 
     fn view(&self, _window: WindowKey) -> Element<Msg> {
         let started = Instant::now();
-        let ground = container(self.tree())
+        let ground = container(Element::new(Tall, vec![self.tree()]))
             .padding(8.0)
             .fill(Tone::Color(GROUND))
             .clip()
